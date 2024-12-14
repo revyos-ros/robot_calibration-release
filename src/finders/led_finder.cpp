@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2022-2024 Michael Ferguson
+ * Copyright (C) 2022 Michael Ferguson
  * Copyright (C) 2015 Fetch Robotics Inc.
  * Copyright (C) 2013-2014 Unbounded Robotics Inc.
  *
@@ -69,13 +69,10 @@ bool LedFinder::init(const std::string& name,
 
   // Setup subscriber
   topic_name = node->declare_parameter<std::string>(name + ".topic", name + "/points");
-  rclcpp::SubscriptionOptions options;
-  options.qos_overriding_options = rclcpp::QosOverridingOptions::with_default_policies();
   subscriber_ = node->create_subscription<sensor_msgs::msg::PointCloud2>(
     topic_name,
     rclcpp::QoS(1).best_effort(),
-    std::bind(&LedFinder::cameraCallback, this, std::placeholders::_1),
-    options);
+    std::bind(&LedFinder::cameraCallback, this, std::placeholders::_1));
 
   // Publish where LEDs were seen
   publisher_ = node->create_publisher<sensor_msgs::msg::PointCloud2>(name + "_points", 10);
@@ -287,7 +284,7 @@ bool LedFinder::find(robot_calibration_msgs::msg::CalibrationData * msg)
     // Get point
     if (!trackers_[t].getRefinedCentroid(cloud_, rgbd_pt))
     {
-      RCLCPP_ERROR(LOGGER, "No centroid for feature %lu", t);
+      RCLCPP_ERROR_STREAM(LOGGER, "No centroid for feature " << t);
       return false;
     }
 
@@ -298,14 +295,13 @@ bool LedFinder::find(robot_calibration_msgs::msg::CalibrationData * msg)
     }
     catch (tf2::TransformException& ex)
     {
-      RCLCPP_ERROR(LOGGER, "Failed to transform feature to %s", trackers_[t].frame_.c_str());
+      RCLCPP_ERROR_STREAM(LOGGER, "Failed to transform feature to " << trackers_[t].frame_);
       return false;
     }
     double distance = distancePoints(world_pt.point, trackers_[t].point_);
     if (distance > max_error_)
     {
-      RCLCPP_ERROR(LOGGER, "Feature was too far away from expected pose in %s: %f",
-                   trackers_[t].frame_.c_str(), distance);
+      RCLCPP_ERROR_STREAM(LOGGER, "Feature was too far away from expected pose in " << trackers_[t].frame_ << ": " << distance);
       return false;
     }
 
@@ -316,7 +312,7 @@ bool LedFinder::find(robot_calibration_msgs::msg::CalibrationData * msg)
       double actual = distancePoints(observations[CAMERA].features[t2].point, rgbd_pt.point);
       if (fabs(expected-actual) > max_inconsistency_)
       {
-        RCLCPP_ERROR(LOGGER, "Features not internally consistent: %f vs %f", expected, actual);
+        RCLCPP_ERROR_STREAM(LOGGER, "Features not internally consistent: " << expected << " " << actual);
         return false;
       }
     }
@@ -505,9 +501,13 @@ bool LedFinder::CloudDifferenceTracker::getRefinedCentroid(
   centroid.point.y = (iter + max_idx_)[Y];
   centroid.point.z = (iter + max_idx_)[Z];
 
-  // Only check distance from centroid if centroid is valid
-  bool invalid_centroid = std::isnan(centroid.point.x) || std::isnan(centroid.point.y) ||
-                          std::isnan(centroid.point.z);
+  // Do not accept NANs
+  if (std::isnan(centroid.point.x) ||
+      std::isnan(centroid.point.y) ||
+      std::isnan(centroid.point.z))
+  {
+    return false;
+  }
 
   // Get a better centroid
   int points = 0;
@@ -531,7 +531,7 @@ bool LedFinder::CloudDifferenceTracker::getRefinedCentroid(
       double dz = point[Z] - centroid.point.z;
 
       // That are less than 1cm from the max point
-      if (invalid_centroid || (dx * dx) + (dy * dy) + (dz * dz) < (0.05 * 0.05))
+      if ((dx*dx) + (dy*dy) + (dz*dz) < (0.05*0.05))
       {
         sum_x += point[X];
         sum_y += point[Y];
@@ -543,13 +543,12 @@ bool LedFinder::CloudDifferenceTracker::getRefinedCentroid(
 
   if (points > 0)
   {
-    centroid.point.x = sum_x / points;
-    centroid.point.y = sum_y / points;
-    centroid.point.z = sum_z / points;
-    return true;
+    centroid.point.x = (centroid.point.x + sum_x)/(points+1);
+    centroid.point.y = (centroid.point.y + sum_y)/(points+1);
+    centroid.point.z = (centroid.point.z + sum_z)/(points+1);
   }
 
-  return false;
+  return true;
 }
 
 sensor_msgs::msg::Image LedFinder::CloudDifferenceTracker::getImage()
